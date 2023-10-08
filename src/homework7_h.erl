@@ -2,20 +2,22 @@
 
 -export([init/2]).
 
--define(KEY, <<"key">>).
--define(VALUE, <<"value">>).
--define(TTL, <<"ttl">>).
--define(DATE_FROM, <<"date_from">>).
--define(DATE_TO, <<"date_to">>).
+-include("homework7.hrl").
 
 init(#{method := <<"POST">>} = Req0, Opts) ->
 	{ok, Body, _Req} = cowboy_req:read_body(Req0),
 	Pid = proplists:get_value(pid, Opts),
-	io:format("init"),
 	Res = request_handler(jsx:decode(Body, [return_maps]), Pid),
 	Req = cowboy_req:reply(200, #{
 		<<"content-type">> => <<"text/plain">>
 	}, jsx:encode(Res), Req0),
+	{ok, Req, Opts};
+init(Req0, Opts) ->
+	Req = cowboy_req:reply(200, #{
+		<<"content-type">> => <<"text/plain">>
+	}, jsx:encode(#{
+		<<"result">> => <<"sorry, route not found">>
+	}), Req0),
 	{ok, Req, Opts}.
 
 request_handler(#{<<"action">> := <<"insert">>} = Data, Pid) ->
@@ -35,7 +37,8 @@ request_handler(#{<<"action">> := <<"lookup">>} = Data, Pid) ->
 	#{<<"result">> => Value};
 request_handler(#{<<"action">> := <<"lookup_by_date">>} = Data, Pid) ->
 	DateFrom = maps:get(?DATE_FROM, Data),
-	io:format("~p~n", [DateFrom]),
 	DateTo = maps:get(?DATE_TO, Data),
 	Res = gen_server:call(Pid, {lookup_by_date, DateFrom, DateTo}),
-	#{<<"result">> => Res}.
+	#{<<"result">> => Res};
+request_handler(_Data, _Pid) ->
+	#{<<"result">> => <<"action not found">>}.

@@ -44,23 +44,24 @@ init([]) ->
 
 handle_call({create, TableName}, _From, State) ->
 	Table = ets:new(TableName, [public, ordered_set, named_table]),
-%%	erlang:send_after(60000, self(), {delete_obsolete, Table}),
+	erlang:send_after(60000, self(), {delete_obsolete, Table}),
 	{reply, Table, State};
 handle_call({insert, Key, Value, Ttl}, _From, State) ->
 	ExpireTime = calendar:datetime_to_gregorian_seconds(calendar:local_time()) + Ttl,
-	ets:insert(?TABLE, {Key, Value, ExpireTime}),
+	ets:insert(?TABLE, {Key, Value, {expire_time, ExpireTime}}),
 	{reply, ok, State};
 handle_call({insert, Key, Value}, _From, State) ->
-	ets:insert(?TABLE, {Key, Value}),
+	CurrentUnixtime = get_unixtime(),
+	ets:insert(?TABLE, {Key, Value, {timestamp, CurrentUnixtime}}),
 	{reply, ok, State};
 handle_call({lookup, Key}, _From, State) ->
 	CurrentUnixTime = calendar:datetime_to_gregorian_seconds(calendar:local_time()),
 	case ets:lookup(?TABLE, Key) of
-		{Key, Value} -> {reply, Value, State};
-		[{Key, Value}] -> {reply, Value, State};
-		[{Key, Value, ExpireTime}] when CurrentUnixTime =< ExpireTime ->
+		{Key, Value, {timestamp, _}} -> {reply, Value, State};
+		[{Key, Value, {timestamp, _}}] -> {reply, Value, State};
+		[{Key, Value, {expire_time, ExpireTime}}] when CurrentUnixTime =< ExpireTime ->
 			{reply, Value, State};
-		[{Key, _Value, _ExpireTime}] ->
+		[{Key, _Value, {expire_time, _ExpireTime}}] ->
 			ets:delete(?TABLE, Key),
 			{reply, undefined, State};
 		_ -> {reply, undefined, State}
@@ -69,12 +70,9 @@ handle_call({delete, Key}, _From, State) ->
 	ets:delete(?TABLE, Key),
 	{reply, ok, State};
 handle_call({lookup_by_date, DateFrom, DateTo}, _From, State) ->
-	io:format("start~n"),
 	DateFromUnixtime = get_unixtime(DateFrom),
-	io:format("~p~n", [DateFromUnixtime]),
 	DateToUnixtime = get_unixtime(DateTo),
 	Values = lookup_by_date(ets:first(?TABLE), DateFromUnixtime, DateToUnixtime, []),
-%%	Values = ok,
 	{reply, Values, State};
 handle_call(_Request, _From, State) ->
 	{reply, ok, State}.
@@ -83,9 +81,7 @@ handle_cast(_Request, State) ->
 	{noreply, State}.
 
 handle_info({delete_obsolete, TableName}, State) ->
-	io:format(delete),
 	delete_obsolete(TableName),
-	erlang:send_after(60000, self(), {delete_obsolete, TableName}),
 	{noreply, State};
 handle_info(_Info, State) ->
 	{noreply, State}.
@@ -102,20 +98,24 @@ delete_obsolete(TableName) ->
 	ok = delete_obsolete(TableName, FirstKey, CurrentUnixtime).
 
 delete_obsolete(_TableName, '$end_of_table', _Unixtime) ->
+	io:format(delete),
+	erlang:send_after(60000, self(), {delete_obsolete, ?TABLE}),
 	ok;
 delete_obsolete(TableName, Key, Unixtime) ->
 	case ets:lookup(TableName, Key) of
-		[{Key, _Value, EndDateSec}] when Unixtime >= EndDateSec ->
+		[{Key, _Value, {expire_time, EndDateSec}}] when Unixtime >= EndDateSec ->
 			ets:delete(TableName, Key);
 		_ -> true
 	end,
 	delete_obsolete(TableName, ets:next(TableName, Key), Unixtime).
 
 lookup_by_date('$end_of_table', _TimeFrom, _TimeTo, Acc) ->
-	Acc;
+	lists:reverse(Acc);
 lookup_by_date(Key, TimeFrom, TimeTo, Acc) ->
 	case ets:lookup(?TABLE, Key) of
-		[{K, V, ExpireTime}] when ExpireTime >= TimeFrom, ExpireTime =< TimeTo ->
+		[{K, V, {expire_time, ExpireTime}}] when ExpireTime >= TimeFrom, ExpireTime =< TimeTo ->
+			lookup_by_date(ets:next(?TABLE, Key), TimeFrom, TimeTo, [{K, V} | Acc]);
+		[{K, V, {timestamp, Time}}] when Time >= TimeFrom, Time =< TimeTo ->
 			lookup_by_date(ets:next(?TABLE, Key), TimeFrom, TimeTo, [{K, V} | Acc]);
 		_ -> lookup_by_date(ets:next(?TABLE, Key), TimeFrom, TimeTo, Acc)
 	end.
@@ -132,4 +132,3 @@ get_unixtime(DateTimeBin) ->
 		{binary_to_integer(HourBin), binary_to_integer(MinBin), binary_to_integer(SecBin)}
 	},
 	calendar:datetime_to_gregorian_seconds(GregorianTime).
-%%	calendar:datetime_to_gregorian_seconds(Date).
